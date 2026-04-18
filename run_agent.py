@@ -7323,6 +7323,60 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    # ── GLM-5 concatenated tool-name splitter ────────────────────────
+    # When GLM-5 emits two tool calls in one response but concatenates
+    # the names (e.g. "read_filewrite_file"), the registry returns
+    # "Unknown tool".  This splitter decomposes the concatenated name
+    # into valid tool names by trying all split points with greedy
+    # left-to-right (longest-match-first) matching.
+
+    @staticmethod
+    def _try_split_concatenated_tool_name(
+        concatenated: str,
+        registered_names: set,
+    ) -> list:
+        """Try to split a concatenated tool name into valid registered names.
+
+        Uses greedy left-to-right matching (longest match first).
+        Returns a list of valid tool names if the entire string can be
+        decomposed, or an empty list if no valid split exists.
+
+        Examples:
+            _try_split_concatenated_tool_name("read_filewrite_file", {"read_file", "write_file"})
+            → ["read_file", "write_file"]
+        """
+        if not concatenated or not registered_names:
+            return []
+
+        # Sort registered names by length descending for greedy matching
+        sorted_names = sorted(registered_names, key=len, reverse=True)
+
+        def _greedy_match(remaining: str, depth: int = 0) -> list:
+            if not remaining:
+                return []
+            for name in sorted_names:
+                if remaining.startswith(name):
+                    rest = remaining[len(name):]
+                    if not rest:
+                        # Exact match of the full remaining string.
+                        # At depth 0 this means the full concatenated name
+                        # IS a registered tool — but we only get called when
+                        # it's NOT, so skip.  At depth > 0 this is a valid
+                        # terminal match (e.g. "write_file" after splitting
+                        # off "read_file").
+                        if depth == 0:
+                            continue
+                        return [name]
+                    sub_result = _greedy_match(rest, depth + 1)
+                    if sub_result is not None:
+                        return [name] + sub_result
+            return None  # No valid decomposition
+
+        result = _greedy_match(concatenated)
+        if result and len(result) >= 2:
+            return result
+        return []
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -7460,6 +7514,52 @@ class AIAgent:
         for tool_call in tool_calls:
             function_name = tool_call.function.name
 
+            # ── Concatenated tool name split (GLM-5 workaround) ─────────
+            # Models like GLM-5 sometimes concatenate multiple tool names
+            # into one (e.g. "read_filewrite_file"). Try to split them.
+            if function_name not in self.valid_tool_names:
+                split_names = self._try_split_concatenated_tool_name(
+                    function_name, self.valid_tool_names
+                )
+                if split_names:
+                    self._log(f"CONCATENATED_TOOL_SPLIT: {function_name} → {split_names}")
+                    try:
+                        function_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        function_args = {}
+                    if not isinstance(function_args, dict):
+                        function_args = {}
+                    # Expand: first tool gets original args, rest get {}
+                    for idx, split_name in enumerate(split_names):
+                        split_args = function_args if idx == 0 else {}
+                        # Reset nudge counters for each split tool
+                        if split_name == "memory":
+                            self._turns_since_memory = 0
+                        elif split_name == "skill_manage":
+                            self._iters_since_skill = 0
+                        # Checkpoint for file-mutating tools
+                        if split_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+                            try:
+                                file_path = split_args.get("path", "")
+                                if file_path:
+                                    work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                                    self._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {split_name}")
+                            except Exception:
+                                pass
+                        # Checkpoint before destructive terminal commands
+                        if split_name == "terminal" and self._checkpoint_mgr.enabled:
+                            try:
+                                cmd = split_args.get("command", "")
+                                if _is_destructive_command(cmd):
+                                    cwd = split_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                                    self._checkpoint_mgr.ensure_checkpoint(
+                                        cwd, f"before terminal: {cmd[:60]}"
+                                    )
+                            except Exception:
+                                pass
+                        parsed_calls.append((tool_call, split_name, split_args))
+                    continue  # skip normal append below
+
             # Reset nudge counters
             if function_name == "memory":
                 self._turns_since_memory = 0
@@ -7527,7 +7627,8 @@ class AIAgent:
 
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
-        results = [None] * num_tools
+        # Use len(parsed_calls) not num_tools: concatenated-tool splits may expand the list.
+        results = [None] * len(parsed_calls)
 
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).
