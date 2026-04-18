@@ -150,6 +150,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    "featherless": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("FEATHERLESS_API_KEY",),
+        base_url_override="https://api.featherless.ai/v1",
+    ),
 }
 
 
@@ -266,6 +271,9 @@ ALIASES: Dict[str, str] = {
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
+    "feather": "featherless",
+    "featherless-ai": "featherless",
+    "featherclaw": "featherless",
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -285,6 +293,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "featherless": "Featherless",
 }
 
 
