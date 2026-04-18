@@ -260,7 +260,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "ai-gateway": [
         "anthropic/claude-opus-4.6",
-        "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5",
@@ -271,6 +270,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-2.5-pro",
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v3.2",
+    ],
+    "featherless": [
+        "zai-org/GLM-5.1",
+        "zai-org/GLM-5",
+        "MiniMaxAI/MiniMax-M2.5",
+        "MiniMaxAI/MiniMax-M2.7",
+        "moonshotai/Kimi-K2.5",
+        "Qwen/Qwen3.5-397B-A17B",
+        "arcee-ai/Trinity-Large-Thinking",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
@@ -557,6 +565,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("featherless",   "Featherless",              "Featherless (open models, flat $200/mo subscription, 8 concurrent units)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -620,6 +629,9 @@ _PROVIDER_ALIASES = {
     "x.ai": "xai",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "feather": "featherless",
+    "featherless-ai": "featherless",
+    "featherclaw": "featherless",
 }
 
 
@@ -2090,6 +2102,37 @@ def validate_requested_model(
                     f"{suggestion_text}"
                 ),
             }
+
+    # Check predefined provider model catalogs — skip live API probe entirely
+    # for providers with known catalogs (e.g. Featherless has 1000+ models,
+    # making /v1/models slow/unreliable).
+    if normalized in _PROVIDER_MODELS:
+        catalog = _PROVIDER_MODELS[normalized]
+        if requested_for_lookup in catalog:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        # Model not in catalog — accept optimistically (may be newly added)
+        # with a hint about known models.  Do NOT fall through to API probe
+        # for providers with huge catalogs that would time out.
+        suggestions = get_close_matches(requested_for_lookup, catalog, n=3, cutoff=0.5)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+        provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` was not found in the {provider_label} model catalog. "
+                f"It may still work if it was recently added."
+                f"{suggestion_text}"
+            ),
+        }
 
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
