@@ -71,8 +71,8 @@ SUPPORTED_POOL_STRATEGIES = {
 # Cooldown before retrying an exhausted credential.
 # 429 (rate-limited) and 402 (billing/quota) both cool down after 1 hour.
 # Provider-supplied reset_at timestamps override these defaults.
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
-EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+EXHAUSTED_TTL_429_SECONDS = 3           # 3s — Featherless 429 is just "wait for a slot", retry immediately
+EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 5      # 5 min — other errors may be more serious
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
